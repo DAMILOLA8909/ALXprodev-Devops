@@ -1,121 +1,32 @@
 #!/bin/bash
 
 # Script: apiAutomation-0x00
-# Description: Automate Pokémon API requests and save results to files
-# Usage: ./apiAutomation-0x00
+# Description: Fetch Pikachu data from Pokémon API and save to data.json
+# Error handling included
 
-# Pokémon API URL for Pikachu
-API_URL="https://pokeapi.co/api/v2/pokemon/pikachu"
+# API URL for Pikachu
+URL="https://pokeapi.co/api/v2/pokemon/pikachu"
 
-# Output files
-DATA_FILE="data.json"
-ERROR_FILE="errors.txt"
+# Make the API request and save response to data.json
+# Redirect stderr (errors) to errors.txt
+curl -s "$URL" -o data.json 2>> errors.txt
 
-# Create or clear error file
-> "$ERROR_FILE"
+# Check if curl was successful
+if [ $? -ne 0 ]; then
+    echo "Failed to fetch data from API at $(date)" >> errors.txt
+    exit 1
+fi
 
-# Function to log errors
-log_error() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$ERROR_FILE"
-}
-
-# Function to make API request
-make_request() {
-    echo "Making API request to Pokémon API for Pikachu..."
-    
-    # Use curl to make the API request
-    response=$(curl -s -w "%{http_code}" "$API_URL")
-    
-    # Extract HTTP status code (last 3 characters)
-    http_code=${response: -3}
-    
-    # Extract response body (all characters except last 3)
-    response_body=${response:0:${#response}-3}
-    
-    if [ "$http_code" -eq 200 ]; then
-        # Save successful response to data.json
-        echo "$response_body" > "$DATA_FILE"
-        
-        # Validate JSON format
-        if jq empty "$DATA_FILE" 2>/dev/null; then
-            echo "✅ Success! Data saved to $DATA_FILE"
-            echo "Response preview:"
-            jq . "$DATA_FILE" | head -20
-        else
-            log_error "Invalid JSON response received"
-            echo "❌ Error: Invalid JSON response. Check $ERROR_FILE for details."
-        fi
+# Check if we got a valid JSON response
+if [ -s "data.json" ]; then
+    # Test if the file contains valid JSON
+    if jq . data.json >/dev/null 2>&1; then
+        echo "Data successfully saved to data.json"
     else
-        # Log error details
-        log_error "HTTP $http_code: Failed to fetch data from $API_URL"
-        log_error "Response: $response_body"
-        echo "❌ Error: API request failed with HTTP code $http_code. Check $ERROR_FILE for details."
+        echo "Invalid JSON received from API" >> errors.txt
+        echo "Response content:" >> errors.txt
+        cat data.json >> errors.txt
     fi
-}
-
-# Function to display usage
-show_usage() {
-    echo "Usage: $0 [OPTIONS]"
-    echo "Options:"
-    echo "  -h, --help     Show this help message"
-    echo "  -p, --pokemon  Specify Pokémon name (default: pikachu)"
-    echo "  -o, --output   Specify output JSON file (default: data.json)"
-    echo "  -e, --errors   Specify error log file (default: errors.txt)"
-    echo ""
-    echo "Examples:"
-    echo "  $0                    # Fetch Pikachu data"
-    echo "  $0 -p charizard       # Fetch Charizard data"
-    echo "  $0 -p bulbasaur -o bulbasaur.json"
-}
-
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -h|--help)
-            show_usage
-            exit 0
-            ;;
-        -p|--pokemon)
-            POKEMON_NAME="$2"
-            API_URL="https://pokeapi.co/api/v2/pokemon/$POKEMON_NAME"
-            shift 2
-            ;;
-        -o|--output)
-            DATA_FILE="$2"
-            shift 2
-            ;;
-        -e|--errors)
-            ERROR_FILE="$2"
-            shift 2
-            ;;
-        *)
-            echo "Unknown option: $1"
-            show_usage
-            exit 1
-            ;;
-    esac
-done
-
-# Check if curl is installed
-if ! command -v curl &> /dev/null; then
-    echo "❌ Error: curl is not installed. Installing..."
-    sudo apt-get update && sudo apt-get install -y curl
+else
+    echo "Empty response received from API" >> errors.txt
 fi
-
-# Check if jq is installed (for JSON parsing)
-if ! command -v jq &> /dev/null; then
-    echo "⚠️  jq is not installed. Installing..."
-    sudo apt-get update && sudo apt-get install -y jq
-fi
-
-# Make the API request
-make_request
-
-# Provide sample output
-echo ""
-echo "--- Sample Usage ---"
-echo "To view the saved data:"
-echo "  jq . < $DATA_FILE | head -50"
-echo ""
-echo "To check for errors:"
-echo "  cat $ERROR_FILE"
