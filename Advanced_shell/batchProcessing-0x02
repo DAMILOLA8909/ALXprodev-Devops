@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# Script: batchProcessing-0x02
+# Description: Fetch data for multiple Pokémon with IP fallback
+
+# List of Pokémon to fetch
+POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
+
+# Create directory for Pokémon data
+DATA_DIR="pokemon_data"
+mkdir -p "$DATA_DIR"
+
+# Try different endpoints (domain and IP)
+BASE_URLS=(
+    "https://pokeapi.co/api/v2/pokemon"
+    "http://pokeapi.co/api/v2/pokemon"
+    "https://151.101.194.217/api/v2/pokemon"
+)
+
+# Function to test connectivity
+test_connection() {
+    for url_base in "${BASE_URLS[@]}"; do
+        if curl -s --connect-timeout 5 "${url_base}/pikachu" >/dev/null 2>&1; then
+            echo "$url_base"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Find working endpoint
+echo "Testing API endpoints..."
+WORKING_URL=$(test_connection)
+
+if [ -z "$WORKING_URL" ]; then
+    echo "ERROR: Cannot connect to Pokémon API. Check your internet/DNS." >&2
+    echo "Trying to fix DNS..."
+    
+    # Try to fix DNS temporarily
+    echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf >/dev/null 2>&1
+    echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf >/dev/null 2>&1
+    
+    # Test again
+    WORKING_URL=$(test_connection)
+    
+    if [ -z "$WORKING_URL" ]; then
+        echo "Failed. Please check your WSL network settings." >&2
+        exit 1
+    fi
+    echo "DNS fixed! Using: $WORKING_URL"
+else
+    echo "Using: $WORKING_URL"
+fi
+
+# Loop through Pokémon list
+for pokemon in "${POKEMON_LIST[@]}"; do
+    echo "Fetching data for $pokemon..."
+    
+    # Make request
+    if curl -s "${WORKING_URL}/${pokemon}" \
+        -o "$DATA_DIR/${pokemon}.json" 2>/dev/null; then
+        echo "Saved data to $DATA_DIR/${pokemon}.json ✅"
+    else
+        echo "Failed to fetch $pokemon ❌"
+    fi
+    
+    # Add delay between requests (except after last)
+    if [ "$pokemon" != "${POKEMON_LIST[-1]}" ]; then
+        sleep 2
+    fi
+done
+
+echo ""
+echo "Done! Check $DATA_DIR/ for JSON files."
