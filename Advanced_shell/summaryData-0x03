@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Script: summaryData-0x03
+# Description: Generate CSV report from Pokémon JSON files with averages
+
+# Directory containing Pokémon JSON files
+DATA_DIR="pokemon_data"
+REPORT_FILE="pokemon_report.csv"
+
+# Check if data directory exists
+if [ ! -d "$DATA_DIR" ]; then
+    echo "Error: $DATA_DIR directory not found. Run batchProcessing-0x02 first." >&2
+    exit 1
+fi
+
+# Get list of JSON files
+json_files=("$DATA_DIR"/*.json)
+if [ ${#json_files[@]} -eq 0 ] || [ ! -f "${json_files[0]}" ]; then
+    echo "Error: No JSON files found in $DATA_DIR" >&2
+    exit 1
+fi
+
+# Initialize arrays and totals
+declare -a names
+declare -a heights
+declare -a weights
+total_height=0
+total_weight=0
+count=0
+
+# Create CSV header
+echo "Name,Height (m),Weight (kg)" > "$REPORT_FILE"
+
+# Process each JSON file
+for json_file in "${json_files[@]}"; do
+    # Skip if not a regular file
+    [ -f "$json_file" ] || continue
+    
+    # Extract data using jq
+    name=$(jq -r '.name' "$json_file" 2>/dev/null)
+    height_raw=$(jq -r '.height' "$json_file" 2>/dev/null)
+    weight_raw=$(jq -r '.weight' "$json_file" 2>/dev/null)
+    
+    # Skip if extraction failed
+    if [ -z "$name" ] || [ -z "$height_raw" ] || [ -z "$weight_raw" ]; then
+        echo "Warning: Skipping invalid file: $(basename "$json_file")" >&2
+        continue
+    fi
+    
+    # Convert units (decimeters to meters, hectograms to kg)
+    height=$(echo "scale=2; $height_raw / 10" | bc -l 2>/dev/null || echo "$height_raw" | awk '{printf "%.2f", $1/10}')
+    weight=$(echo "scale=2; $weight_raw / 10" | bc -l 2>/dev/null || echo "$weight_raw" | awk '{printf "%.2f", $1/10}')
+    
+    # Capitalize first letter of name
+    name_cap=$(echo "$name" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+    
+    # Add to CSV
+    echo "$name_cap,$height,$weight" >> "$REPORT_FILE"
+    
+    # Store for averages calculation
+    names+=("$name_cap")
+    heights+=("$height")
+    weights+=("$weight")
+    
+    # Add to totals
+    total_height=$(echo "$total_height + $height" | bc -l 2>/dev/null || echo "$total_height $height" | awk '{printf "%.2f", $1 + $2}')
+    total_weight=$(echo "$total_weight + $weight" | bc -l 2>/dev/null || echo "$total_weight $weight" | awk '{printf "%.2f", $1 + $2}')
+    ((count++))
+done
+
+# Calculate averages using awk
+if [ $count -gt 0 ]; then
+    avg_height=$(echo "scale=2; $total_height / $count" | bc -l 2>/dev/null || echo "$total_height $count" | awk '{printf "%.2f", $1 / $2}')
+    avg_weight=$(echo "scale=2; $total_weight / $count" | bc -l 2>/dev/null || echo "$total_weight $count" | awk '{printf "%.2f", $1 / $2}')
+    
+    echo "CSV Report generated at: $REPORT_FILE"
+    echo ""
+    cat "$REPORT_FILE"
+    echo ""
+    echo "Average Height: $avg_height m"
+    echo "Average Weight: $avg_weight kg"
+else
+    echo "Error: No valid Pokémon data found" >&2
+    exit 1
+fi
