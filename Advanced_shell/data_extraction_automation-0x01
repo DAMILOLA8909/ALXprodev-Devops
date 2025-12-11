@@ -1,0 +1,60 @@
+#!/bin/bash
+
+# Script: data_extraction_automation-0x01
+# Description: Extract Pokémon data from data.json using jq, awk, sed
+
+# Check if data.json exists
+if [ ! -f "data.json" ]; then
+    echo "Error: data.json not found. Run the API script first." >&2
+    exit 1
+fi
+
+# Extract data using jq and format with awk/sed
+jq -r '
+    .name, 
+    .height, 
+    .weight, 
+    (.types[].type.name // empty)
+' data.json | \
+awk '
+    BEGIN {
+        count=0
+        types=""
+    }
+    NR==1 { name=$0 }
+    NR==2 { height=$0/10 }
+    NR==3 { weight=$0/10 }
+    NR>=4 {
+        if (types == "") {
+            types = $0
+        } else {
+            types = types ", " $0
+        }
+    }
+    END {
+        # Capitalize first letter of each type
+        split(types, type_array, ", ")
+        for (i in type_array) {
+            first_char = toupper(substr(type_array[i], 1, 1))
+            rest = substr(type_array[i], 2)
+            type_array[i] = first_char rest
+        }
+        
+        # Join types back
+        types = ""
+        for (i in type_array) {
+            if (types == "") {
+                types = type_array[i]
+            } else {
+                types = types ", " type_array[i]
+            }
+        }
+        
+        # Capitalize Pokémon name
+        name_first = toupper(substr(name, 1, 1))
+        name_rest = substr(name, 2)
+        name = name_first name_rest
+        
+        print name " is of type " types ", weighs " weight "kg, and is " height "m tall."
+    }
+'
