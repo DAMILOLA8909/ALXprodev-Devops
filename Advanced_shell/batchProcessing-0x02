@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Script: batchProcessing-0x02
-# Description: Fetch data for multiple Pokémon with IP fallback
+# Script: batchProcessing-0x02 (Updated with retry logic)
+# Description: Fetch data for multiple Pokémon with retry mechanism
 
 # List of Pokémon to fetch
 POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
@@ -10,65 +10,137 @@ POKEMON_LIST=("bulbasaur" "ivysaur" "venusaur" "charmander" "charmeleon")
 DATA_DIR="pokemon_data"
 mkdir -p "$DATA_DIR"
 
-# Try different endpoints (domain and IP)
-BASE_URLS=(
-    "https://pokeapi.co/api/v2/pokemon"
-    "http://pokeapi.co/api/v2/pokemon"
-    "https://151.101.194.217/api/v2/pokemon"
-)
+# Base URL for Pokémon API
+BASE_URL="https://pokeapi.co/api/v2/pokemon"
 
-# Function to test connectivity
-test_connection() {
-    for url_base in "${BASE_URLS[@]}"; do
-        if curl -s --connect-timeout 5 "${url_base}/pikachu" >/dev/null 2>&1; then
-            echo "$url_base"
-            return 0
-        fi
-    done
-    return 1
+# Delay between requests (in seconds) to avoid rate limiting
+DELAY=2
+
+# Maximum retry attempts
+MAX_RETRIES=3
+
+# Error log file
+ERROR_LOG="$DATA_DIR/fetch_errors.log"
+> "$ERROR_LOG"  # Clear previous error log
+
+# Function to log errors with timestamp
+log_error() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$ERROR_LOG"
 }
 
-# Find working endpoint
-echo "Testing API endpoints..."
-WORKING_URL=$(test_connection)
-
-if [ -z "$WORKING_URL" ]; then
-    echo "ERROR: Cannot connect to Pokémon API. Check your internet/DNS." >&2
-    echo "Trying to fix DNS..."
+# Function to fetch Pokémon data with retry logic
+fetch_pokemon() {
+    local pokemon="$1"
+    local output_file="$DATA_DIR/${pokemon}.json"
+    local attempt=1
+    local success=0
     
-    # Try to fix DNS temporarily
-    echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf >/dev/null 2>&1
-    echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf >/dev/null 2>&1
-    
-    # Test again
-    WORKING_URL=$(test_connection)
-    
-    if [ -z "$WORKING_URL" ]; then
-        echo "Failed. Please check your WSL network settings." >&2
-        exit 1
-    fi
-    echo "DNS fixed! Using: $WORKING_URL"
-else
-    echo "Using: $WORKING_URL"
-fi
-
-# Loop through Pokémon list
-for pokemon in "${POKEMON_LIST[@]}"; do
     echo "Fetching data for $pokemon..."
     
-    # Make request
-    if curl -s "${WORKING_URL}/${pokemon}" \
-        -o "$DATA_DIR/${pokemon}.json" 2>/dev/null; then
-        echo "Saved data to $DATA_DIR/${pokemon}.json ✅"
+    # Retry loop
+    while [ $attempt -le $MAX_RETRIES ] && [ $success -eq 0 ]; do
+        # Make API request with timeout
+        curl -s -f --connect-timeout 10 --max-time 30 \
+            "${BASE_URL}/${pokemon}" \
+            -o "$output_file" 2>/dev/null
+        
+        local curl_exit=$?
+        
+        # Check result
+        if [ $curl_exit -eq 0 ] && [ -s "$output_file" ]; then
+            # Validate JSON
+            if jq empty "$output_file" 2>/dev/null; then
+                success=1
+                echo "Saved data to $output_file ✅"
+                return 0
+            else
+                log_error "Attempt $attempt for $pokemon: Invalid JSON response"
+                rm -f "$output_file"
+            fi
+        else
+            # Log specific curl errors
+            case $curl_exit in
+                6)  error_msg="Could not resolve host" ;;
+                7)  error_msg="Failed to connect" ;;
+                22) error_msg="HTTP 404 - Pokémon not found" ;;
+                28) error_msg="Connection timeout" ;;
+                35) error_msg="SSL/TLS handshake failed" ;;
+                52) error_msg="Empty reply from server" ;;
+                *)  error_msg="curl failed with code $curl_exit" ;;
+            esac
+            log_error "Attempt $attempt for $pokemon: $error_msg"
+        fi
+        
+        # If not last attempt, wait before retrying
+        if [ $attempt -lt $MAX_RETRIES ] && [ $success -eq 0 ]; then
+            echo "  Retry $attempt/$MAX_RETRIES failed. Retrying in 2 seconds..."
+            sleep 2
+        fi
+        
+        ((attempt++))
+    done
+    
+    # If all attempts failed
+    if [ $success -eq 0 ]; then
+        echo "Failed to fetch $pokemon after $MAX_RETRIES attempts ❌"
+        log_error "FINAL: Failed to fetch $pokemon after $MAX_RETRIES attempts"
+        
+        # Clean up any partial file
+        rm -f "$output_file" 2>/dev/null
+        
+        # Create placeholder error file
+        echo "{\"error\": \"Failed to fetch $pokemon after $MAX_RETRIES attempts\"}" > "$output_file"
+        return 1
+    fi
+}
+
+# Test API connectivity before starting
+echo "Testing connection to Pokémon API..."
+if curl -s --head --connect-timeout 5 "https://pokeapi.co" > /dev/null; then
+    echo "Connection to API successful ✓"
+else
+    echo "ERROR: Cannot connect to Pokémon API. Check your internet connection." >&2
+    log_error "Initial connection test failed"
+    exit 1
+fi
+
+echo ""
+echo "Starting Pokémon data fetch with retry logic..."
+echo "================================================="
+
+# Loop through Pokémon list
+success_count=0
+fail_count=0
+
+for pokemon in "${POKEMON_LIST[@]}"; do
+    if fetch_pokemon "$pokemon"; then
+        ((success_count++))
     else
-        echo "Failed to fetch $pokemon ❌"
+        ((fail_count++))
     fi
     
-    # Add delay between requests (except after last)
+    # Add delay between different Pokémon requests (except after last)
     if [ "$pokemon" != "${POKEMON_LIST[-1]}" ]; then
-        sleep 2
+        echo "Waiting ${DELAY}s before next Pokémon..."
+        sleep "$DELAY"
     fi
 done
 
 echo ""
-echo "Done! Check $DATA_DIR/ for JSON files."
+echo "================================================="
+echo "Fetch completed:"
+echo "  Successful: $success_count"
+echo "  Failed: $fail_count"
+
+if [ -s "$ERROR_LOG" ]; then
+    echo ""
+    echo "Errors logged in: $ERROR_LOG"
+    echo "Last 5 errors:"
+    tail -5 "$ERROR_LOG"
+fi
+
+if [ $success_count -gt 0 ]; then
+    echo ""
+    echo "Created files in $DATA_DIR/:"
+    ls -1 "$DATA_DIR/"*.json 2>/dev/null | head -10
+fi
